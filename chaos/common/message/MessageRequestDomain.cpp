@@ -1,0 +1,87 @@
+/*
+ * Copyright 2012, 2017 INFN
+ *
+ * Licensed under the EUPL, Version 1.2 or – as soon they
+ * will be approved by the European Commission - subsequent
+ * versions of the EUPL (the "Licence");
+ * You may not use this work except in compliance with the
+ * Licence.
+ * You may obtain a copy of the Licence at:
+ *
+ * https://joinup.ec.europa.eu/software/page/eupl
+ *
+ * Unless required by applicable law or agreed to in
+ * writing, software distributed under the Licence is
+ * distributed on an "AS IS" basis,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
+ * express or implied.
+ * See the Licence for the specific language governing
+ * permissions and limitations under the Licence.
+ */
+
+#include <chaos/common/network/NetworkBroker.h>
+#include <chaos/common/message/MessageRequestFuture.h>
+#include <chaos/common/message/MessageRequestDomain.h>
+
+using namespace chaos::common::data;
+using namespace chaos::common::network;
+using namespace chaos::common::utility;
+using namespace chaos::common::message;
+
+#define MRDAPP_ INFO_LOG(MessageRequestDomain)
+#define MRDDBG_ DBG_LOG(MessageRequestDomain)
+#define MRDERR_ ERR_LOG(MessageRequestDomain)
+
+MessageRequestDomain::MessageRequestDomain():
+domain_id(UUIDUtil::generateUUIDLite()){
+    future_helper.init(NULL);
+    //register the action for the response
+    DeclareAction::addActionDescritionInstance<MessageRequestDomain>(this,
+                                                                     &MessageRequestDomain::response,
+                                                                     domain_id,
+                                                                     "response",
+                                                                     "Receive the reponse for a request");
+    
+    //register to network broker for receive messages
+    NetworkBroker::getInstance()->registerAction(this);
+}
+
+MessageRequestDomain::~MessageRequestDomain() {
+    //deregister to network broker no don't need more messages
+    NetworkBroker::getInstance()->deregisterAction(this);
+    future_helper.deinit();
+}
+
+const std::string& MessageRequestDomain::getDomainID() {
+    return domain_id;
+}
+
+CDWUniquePtr MessageRequestDomain::response(CDWUniquePtr response_data) {
+    if(response_data.get() == NULL) return CDWUniquePtr();
+    CDWShrdPtr response_data_sp(response_data.release());
+    if(!response_data_sp->hasKey(RpcActionDefinitionKey::CS_CMDM_MESSAGE_ID)) return CDWUniquePtr();
+    uint32_t request_id = response_data_sp->getInt32Value(RpcActionDefinitionKey::CS_CMDM_MESSAGE_ID);
+    future_helper.setDataForPromiseID(request_id, response_data_sp);
+    return CDWUniquePtr();
+}
+
+ChaosUniquePtr<MessageRequestFuture> MessageRequestDomain::getNewRequestMessageFuture(CDataWrapper& new_request_datapack,
+                                                                                      uint32_t& new_request_id,
+                                                                                      MessageRequestDomainFutureHelper::PromisesHandlerWeakPtr promises_handler_weak) {
+    
+    //create future and promises
+    MessageRequestDomainFutureHelper::Future request_future;
+    future_helper.addNewPromise(new_request_id,
+                                request_future,
+                                promises_handler_weak);
+    
+    new_request_datapack.addInt32Value(RpcActionDefinitionKey::CS_CMDM_ANSWER_ID, new_request_id);
+    new_request_datapack.addStringValue(RpcActionDefinitionKey::CS_CMDM_ANSWER_DOMAIN, domain_id);
+    new_request_datapack.addStringValue(RpcActionDefinitionKey::CS_CMDM_ANSWER_ACTION, "response");
+    
+    DEBUG_CODE(MRDDBG_ << "New MessageRequestFuture create with id " << new_request_id << " on answer domain " << domain_id;);
+    //return future
+    return ChaosUniquePtr<MessageRequestFuture>(new  MessageRequestFuture(new_request_id,
+                                                                          request_future));
+}
+
